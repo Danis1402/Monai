@@ -40,7 +40,7 @@ DRV8874_Motor MD = {PM, EN, PH, IP, Fault};
 // --- Para PID ---
 int sensores[4];
 float error= 0.0;
-const int velocidadBase = 204
+const int velocidadBase = 100;
 
 ;
 const int kp = 2;
@@ -75,8 +75,8 @@ void errorDireccion() {
 void ajustarMotor(DRV8874_Motor *MD, DRV8874_Motor *MI){
   float correccion = error * kp * velocidadBase;
 
-  int velD = constrain(velocidadBase - correccion, -204, 204);
-  int velI = constrain(velocidadBase + correccion, -204, 204); 
+  int velD = constrain(velocidadBase - correccion, -150, 150);
+  int velI = constrain(velocidadBase + correccion, -150, 150); 
   motor_giro(MD,MI, velD, velI);
 }
 
