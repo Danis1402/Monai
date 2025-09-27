@@ -1,7 +1,7 @@
-//A LLUCAS LE FUNCIONA
-// Hernán ya le funciona 
+#include <DRV8874.h>
 #include <WiFi.h>
 #include <WebServer.h>
+
 
 #define PM 38    // PMODE: HIGH para modo PWM
 #define EN 21     // IN21 en modo PWM derecho
@@ -23,47 +23,66 @@
 
 //Sensores de linea
 #define MLIzq 9
-#define MLDer 48
 
 //Sensor IR
 #define SIR 13 
-
-// current measure 
-float vip = 0;
-float current = 0;
-
-float vip_L = 0;
-float current_L = 0;
-
 
 const char* ssid = "Moñai";
 const char* password = "travaenjoyer";
 WebServer server(80);
 
-enum class STATES {IDLE, TEST, ATTACK, ATTACK_2} SUMO;
+enum class STATES {IDLE, TEST, SEARCH, ATTACK_D,ATTACK_H, ATTACK_L} SUMO;
 bool driverState = false;
+
+DRV8874_Motor MI = {PM_L,EN_L,PH_L,IP_L , Fault_L};
+DRV8874_Motor MD = {PM, EN, PH, IP, Fault};
+
+// --- Para PID ---
+int sensores[4];
+float error= 0.0;
+const int velocidadBase = 204
+
+;
+const int kp = 2;
+int measureTime = 15; // cada 15 ms va a tomar una lectura 
+const static int disparo = 1;
 
 void handleRoot();
 void handleOn();
 void handleOff();
 void handleNotFound();
 
+int sumaLecturas(){
+  sensores[0] = digitalRead(SIzq);
+  sensores[1] = digitalRead(SCizq);
+  sensores[2] = digitalRead(SCder);
+  sensores[3] = digitalRead(SDer);
+    return sensores[0] + sensores[1] + sensores[2] + sensores[3]; 
+}
+
+void errorDireccion() {
+  int fizq = sensores[0] + sensores[1] ;
+  int fder = sensores[2] + sensores[3] ;
+  int total = fizq + fder;
+  if(total == 0){
+    error = 0;
+  } else {
+    error = (fder - fizq)/(float)total;
+  }
+}
+
+// ----- Funcion para calcular los ajuste a los motores --- 
+void ajustarMotor(DRV8874_Motor *MD, DRV8874_Motor *MI){
+  float correccion = error * kp * velocidadBase;
+
+  int velD = constrain(velocidadBase - correccion, -204, 204);
+  int velI = constrain(velocidadBase + correccion, -204, 204); 
+  motor_giro(MD,MI, velD, velI);
+}
+
 
 void setup() {
   Serial.begin(115200);
-
-  pinMode(PM, OUTPUT);
-  pinMode(EN, OUTPUT);
-  pinMode(PH, OUTPUT);
-  pinMode(IP, INPUT);
-  pinMode(Fault, INPUT);
-
-  pinMode(PM_L, OUTPUT);
-  pinMode(EN_L, OUTPUT);
-  pinMode(PH_L, OUTPUT);
-  pinMode(IP_L, INPUT);
-  pinMode(Fault_L, INPUT);
-
   //Sensores de oponente
   pinMode(SDer, INPUT);
   pinMode(SCder, INPUT);
@@ -72,19 +91,11 @@ void setup() {
 
   //Sensores de línea 
   pinMode(MLIzq, INPUT);
-  pinMode(MLDer, INPUT);
-
   //Sensor IR
   pinMode(SIR, INPUT);
 
-  //Modo PWM
-  digitalWrite(PM, HIGH);
-  digitalWrite(PM_L, HIGH);
-
-  analogWrite(EN, 0);     
-  analogWrite(PH, 0);
-  analogWrite(EN_L, 0);     
-  analogWrite(PH_L, 0);
+  motor_init(&MD);
+  motor_init(&MI);
   
   if(WiFi.softAP(ssid, password)){
     Serial.println("Access Point Ip ");
@@ -102,85 +113,97 @@ void setup() {
   SUMO = STATES::IDLE;
 }
 
-void apagarMotores(){
-  analogWrite(EN, 0);     
-  analogWrite(PH, 0);
-  analogWrite(EN_L, 0);     
-  analogWrite(PH_L, 0);
-}
-
 void loop() {
   server.handleClient();
   switch(SUMO) {
     case STATES::IDLE: {
-      if(digitalRead(SIR)==1){
+      if(digitalRead(SIR)){
         Serial.print("IR Encendido ==>  ");
         Serial.println(digitalRead(SIR));
-        SUMO=STATES::ATTACK;
+        SUMO=STATES:: TEST;
         break;
       } else{
         // Asegurar que los motores están APAGADOS en IDLE
-        apagarMotores();
+        motor_avance(&MD, &MI,0);
       }
      break;
 
     }
-    case STATES:: ATTACK: {
-    if(digitalRead(SIR)==0){
-      Serial.print("IR Apagado ==>  ");
-      Serial.println(digitalRead(SIR));
-      apagarMotores();
-      SUMO=STATES::IDLE;
+    // ------ test ------
+    case STATES:: TEST: {
+      if(sumaLecturas() >= disparo){
+        errorDireccion();
+        ajustarMotor(&MD, &MI);
+
+      } else{
+        motor_avance(&MD, &MI, 0);
+
+      }
+      if(digitalRead(SIR) == 0){
+        motor_avance(&MD, &MI, 0);
+        SUMO = STATES :: IDLE;
+        break;
+      }
+    break;
+      
+    }
+    // ------ Declaramos un estado en el cual se va a encargar de la busqueda ---
+    case STATES :: SEARCH:{
+      
+    }
+    // ------ Ataque que Danis va a programar ---------
+    case STATES:: ATTACK_D: {
+      if(digitalRead(SIR)==0){
+        Serial.print("IR Apagado ==>  ");
+        Serial.println(digitalRead(SIR));
+        motor_avance(&MD, &MI, 0);
+        SUMO=STATES::IDLE;
+        break;
+      }
+      if(digitalRead(SCder)==1 && digitalRead(SCizq)==1){
+      analogWrite(EN, 120);     
+      analogWrite(PH, 0);
+
+      analogWrite(EN_L, 120);     
+      analogWrite(PH_L, 0);
+      Serial.println("Adelante");
+      
+
+      } 
+      else if(digitalRead(SDer)==1){ //Si detectamos un 1 en el sensor de la derecha, giramos el minisumo hasta estar frente a frente nuevamente contra el oponente
+        analogWrite(EN, 0);     
+        analogWrite(PH, 0);
+        
+        analogWrite(EN_L, 120);     
+        analogWrite(PH_L, 0);
+        Serial.println("Giro a la izquierda");
+        
+      } else if(digitalRead(SIzq)==1){//Si detectamos un 1 en el sensor de la izquierda, giramos el minisumo hasta estar frente a frente nuevamente contra el oponente
+        analogWrite(EN, 120);     
+        analogWrite(PH, 0);
+
+        analogWrite(EN_L, 0);     
+        analogWrite(PH_L, 0);
+
+        Serial.println("Giro a la derecha");
+        
+
+      } else{ //Mientras no detecte nada en su frente o costados, el minisumo no hace nada 
+        motor_avance(&MD,&MI,0);
+
+      }
+        break;
+    }
+    //------ Ataque que Lucas va a programar --------
+    case STATES::ATTACK_L:{
       break;
     }
-    if(digitalRead(SCder)==1 && digitalRead(SCizq)==1){
-    analogWrite(EN, 120);     
-    analogWrite(PH, 0);
 
-    analogWrite(EN_L, 120);     
-    analogWrite(PH_L, 0);
-    Serial.println("Adelante");
-    //Serial.printf("Sd+: %u SCd: %u SCi: %u Si+: %u ", digitalRead(SDer), digitalRead(SCder), digitalRead(SCizq), digitalRead(SIzq) );
-
-  } 
-  else if(digitalRead(SDer)==1){ //Si detectamos un 1 en el sensor de la derecha, giramos el minisumo hasta estar frente a frente nuevamente contra el oponente
-    analogWrite(EN, 0);     
-    analogWrite(PH, 0);
-    
-    analogWrite(EN_L, 120);     
-    analogWrite(PH_L, 0);
-    Serial.println("Giro a la izquierda");
-    //Serial.printf("Sd+: %u SCd: %u SCi: %u Si+: %u ", digitalRead(SDer), digitalRead(SCder), digitalRead(SCizq), digitalRead(SIzq) );
-  } else if(digitalRead(SIzq)==1){//Si detectamos un 1 en el sensor de la izquierda, giramos el minisumo hasta estar frente a frente nuevamente contra el oponente
-    analogWrite(EN, 120);     
-    analogWrite(PH, 0);
-
-    analogWrite(EN_L, 0);     
-    analogWrite(PH_L, 0);
-
-    Serial.println("Giro a la derecha");
-    //Serial.printf("Sd+: %u SCd: %u SCi: %u Si+: %u ", digitalRead(SDer), digitalRead(SCder), digitalRead(SCizq), digitalRead(SIzq) );
-
-  } else{ //Mientras no detecte nada en su frente o costados, el minisumo no hace nada 
-    apagarMotores();
-
-  }
+    // ----- Ataque Hernán ------
+    case STATES:: ATTACK_H :{
+      
       break;
     }
   }
   
-  
-  /*server.handleClient();
-  if(driverState){
-  analogWrite(EN, 150);     
-  analogWrite(PH, 0);
-  analogWrite(EN_L, 150);     
-  analogWrite(PH_L, 0);
-  } else {
-  analogWrite(EN, 0);     
-  analogWrite(PH, 0);
-  analogWrite(EN_L, 0);     
-  analogWrite(PH_L, 0);
-  }*/
-
 }
